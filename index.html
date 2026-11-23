@@ -1,0 +1,303 @@
+
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BondhuLive</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #eef2f7;
+      color: #172033;
+    }
+    header {
+      background: #075e54;
+      color: white;
+      padding: 18px;
+      text-align: center;
+    }
+    main {
+      max-width: 600px;
+      margin: 20px auto;
+      padding: 15px;
+    }
+    .card {
+      background: white;
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 15px;
+      box-shadow: 0 2px 8px #0001;
+    }
+    input, button {
+      width: 100%;
+      padding: 12px;
+      margin: 6px 0;
+      border-radius: 8px;
+      border: 1px solid #ccc;
+      font-size: 16px;
+    }
+    button {
+      background: #075e54;
+      color: white;
+      border: 0;
+      cursor: pointer;
+    }
+    button:disabled { opacity: .5; }
+    .secondary { background: #526579; }
+    #messages {
+      height: 280px;
+      overflow-y: auto;
+      background: #f4f7f8;
+      padding: 10px;
+      border-radius: 8px;
+    }
+    .message {
+      background: #d9fdd3;
+      padding: 9px;
+      border-radius: 9px;
+      margin: 7px 0;
+      overflow-wrap: anywhere;
+    }
+    .hidden { display: none; }
+    .friend {
+      background: #f1f5f9;
+      color: #172033;
+      text-align: left;
+      border: 1px solid #ddd;
+    }
+    small { color: #64748b; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>💙 BondhuLive</h1>
+  <p>বন্ধুদের সঙ্গে যুক্ত থাকুন</p>
+</header>
+
+<main>
+  <section class="card" id="auth">
+    <h2>লগইন / রেজিস্ট্রেশন</h2>
+    <input id="email" type="email" placeholder="আপনার ইমেইল">
+    <input id="password" type="password" placeholder="পাসওয়ার্ড">
+    <button onclick="register()">নতুন অ্যাকাউন্ট খুলুন</button>
+    <button onclick="login()" class="secondary">লগইন করুন</button>
+    <p id="authStatus"></p>
+  </section>
+
+  <section class="card hidden" id="app">
+    <p>স্বাগতম, <b id="myName"></b></p>
+    <button class="secondary" onclick="logout()">লগআউট</button>
+
+    <h3>বন্ধু খুঁজুন</h3>
+    <input id="search" placeholder="নাম লিখুন" oninput="showFriends()">
+    <div id="friends"></div>
+
+    <h3 id="chatTitle">একজন বন্ধুকে নির্বাচন করুন</h3>
+    <div id="messages"></div>
+    <input id="messageInput" placeholder="মেসেজ লিখুন">
+    <button onclick="sendMessage()">মেসেজ পাঠান</button>
+    <p id="chatStatus"></p>
+  </section>
+</main>
+
+<script>
+const SUPABASE_URL = "https://uawgzbujgdoxowtligftl.supabase.co";
+const SUPABASE_KEY = "Sb_publishable_qDLUitW-i_Z7ShjWngfGtA_DWekIVtX";
+
+const db = window.supabase.createClient(
+  SUPABASE_URL,
+  SUPABASE_KEY
+);
+
+let currentUser = null;
+let selectedFriend = null;
+let realtimeChannel = null;
+let profiles = [];
+
+async function register() {
+  const email = document.getElementById("email").value.trim();
+  const password = document.getElementById("password").value;
+  const status = document.getElementById("authStatus");
+
+  if (!email || password.length < 6) {
+    status.textContent = "সঠিক ইমেইল ও কমপক্ষে ৬ অক্ষরের পাসওয়ার্ড দিন।";
+    return;
+  }
+
+  const { error } = await db.auth.signUp({ email, password });
+  status.textContent = error ? error.message :
+    "রেজিস্ট্রেশন হয়েছে। ইমেইল যাচাই করতে হতে পারে।";
+}
+
+async function login() {
+  const email = document.getElementById("email").value.trim();
+  const password = document.getElementById("password").value;
+  const status = document.getElementById("authStatus");
+
+  const { data, error } = await db.auth.signInWithPassword({
+    email, password
+  });
+
+  if (error) {
+    status.textContent = error.message;
+    return;
+  }
+
+  currentUser = data.user;
+  await startApp();
+}
+
+async function startApp() {
+  document.getElementById("auth").classList.add("hidden");
+  document.getElementById("app").classList.remove("hidden");
+
+  const { data: profile } = await db
+    .from("profiles")
+    .select("display_name")
+    .eq("id", currentUser.id)
+    .maybeSingle();
+
+  document.getElementById("myName").textContent =
+    profile?.display_name || currentUser.email;
+
+  await loadProfiles();
+}
+
+async function loadProfiles() {
+  const { data, error } = await db
+    .from("profiles")
+    .select("id, display_name")
+    .neq("id", currentUser.id);
+
+  if (error) {
+    document.getElementById("chatStatus").textContent = error.message;
+    return;
+  }
+
+  profiles = data || [];
+  showFriends();
+}
+
+function showFriends() {
+  const term = document.getElementById("search").value.toLowerCase();
+  const area = document.getElementById("friends");
+  area.innerHTML = "";
+
+  profiles
+    .filter(p => (p.display_name || "").toLowerCase().includes(term))
+    .forEach(p => {
+      const btn = document.createElement("button");
+      btn.className = "friend";
+      btn.textContent = p.display_name || "নতুন বন্ধু";
+      btn.onclick = () => openChat(p);
+      area.appendChild(btn);
+    });
+}
+
+async function openChat(friend) {
+  selectedFriend = friend;
+  document.getElementById("chatTitle").textContent =
+    "চ্যাট: " + (friend.display_name || "বন্ধু");
+
+  await loadMessages();
+
+  if (realtimeChannel) {
+    await db.removeChannel(realtimeChannel);
+  }
+
+  realtimeChannel = db
+    .channel("chat-" + currentUser.id + "-" + friend.id)
+    .on("postgres_changes", {
+      event: "INSERT",
+      schema: "public",
+      table: "messages"
+    }, payload => {
+      const m = payload.new;
+      if (
+        (m.sender_id === currentUser.id && m.receiver_id === friend.id) ||
+        (m.sender_id === friend.id && m.receiver_id === currentUser.id)
+      ) {
+        loadMessages();
+      }
+    })
+    .subscribe();
+}
+
+async function loadMessages() {
+  if (!selectedFriend) return;
+
+  const a = currentUser.id;
+  const b = selectedFriend.id;
+
+  const { data, error } = await db
+    .from("messages")
+    .select("*")
+    .or(
+      `and(sender_id.eq.${a},receiver_id.eq.${b}),and(sender_id.eq.${b},receiver_id.eq.${a})`
+    )
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    document.getElementById("chatStatus").textContent = error.message;
+    return;
+  }
+
+  const area = document.getElementById("messages");
+  area.innerHTML = "";
+
+  (data || []).forEach(m => {
+    const div = document.createElement("div");
+    div.className = "message";
+    div.textContent =
+      (m.sender_id === a ? "আপনি: " : "বন্ধু: ") + m.message;
+    area.appendChild(div);
+  });
+
+  area.scrollTop = area.scrollHeight;
+}
+
+async function sendMessage() {
+  if (!selectedFriend) {
+    alert("আগে একজন বন্ধুকে নির্বাচন করুন।");
+    return;
+  }
+
+  const input = document.getElementById("messageInput");
+  const message = input.value.trim();
+
+  if (!message) return;
+
+  const { error } = await db.from("messages").insert({
+    sender_id: currentUser.id,
+    receiver_id: selectedFriend.id,
+    message: message
+  });
+
+  if (error) {
+    document.getElementById("chatStatus").textContent = error.message;
+    return;
+  }
+
+  input.value = "";
+  await loadMessages();
+}
+
+async function logout() {
+  if (realtimeChannel) await db.removeChannel(realtimeChannel);
+  await db.auth.signOut();
+  location.reload();
+}
+
+db.auth.getSession().then(async ({ data }) => {
+  if (data.session) {
+    currentUser = data.session.user;
+    await startApp();
+  }
+});
+</script>
+</body>
+</html>
